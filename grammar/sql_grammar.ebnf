@@ -1,0 +1,37 @@
+# Formal EBNF Grammar for Analytical SQL Subset
+# Project: AI-Augmented SQL Query Validator & Formatter
+# Course: BCSE307P - Compiler Design Lab
+
+query           ::= select_stmt [ ";" ]
+
+select_stmt     ::= "SELECT" select_list
+                    "FROM" table_ref { join_clause }*
+                    [ "WHERE" condition ]
+                    [ "GROUP" "BY" column_list ]
+                    [ "HAVING" condition ]
+                    [ "ORDER" "BY" order_list ]
+                    [ "LIMIT" INTEGER ]
+
+select_list     ::= "*" | select_item { "," select_item }*
+select_item     ::= ( agg_expr | column ) [ alias_clause ]
+
+agg_expr        ::= "COUNT" "(" ( column | "*" ) ")"
+                  | ( "SUM" | "AVG" | "MIN" | "MAX" ) "(" column ")"
+
+table_ref       ::= IDENTIFIER [ alias_clause ]
+join_clause     ::= [ "INNER" | "LEFT" ] "JOIN" table_ref "ON" condition
+
+condition       ::= or_expr
+or_expr         ::= and_expr { "OR" and_expr }*
+and_expr        ::= comparison { "AND" comparison }*
+comparison      ::= operand comp_op operand | "(" condition ")"
+comp_op         ::= "=" | "!=" | "<" | ">" | "<=" | ">="
+operand         ::= column | literal
+
+column_list     ::= column { "," column }*
+order_list      ::= order_item { "," order_item }*
+order_item      ::= column [ "ASC" | "DESC" ]
+
+column          ::= [ IDENTIFIER "." ] IDENTIFIER
+alias_clause    ::= [ "AS" ] IDENTIFIER
+literal         ::= STRING | NUMBER

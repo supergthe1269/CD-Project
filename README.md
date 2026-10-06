@@ -78,7 +78,7 @@ Disabling both leaves a complete, independently working SQL compiler.
 
 ## Status
 
-✅ **Fully Implemented & Verified** — End-to-end hand-written compiler pipeline with zero external compiler dependencies, 33/33 automated tests passing, all 7 evaluation matrix scenarios verified, and decoupled AI edges with built-in offline fallbacks.
+**Fully Implemented & Verified** — End-to-end hand-written compiler pipeline with zero external compiler dependencies, 33/33 automated tests passing, all 7 evaluation matrix scenarios verified, and decoupled AI edges with built-in offline fallbacks.
 
 ## Repo Structure
 

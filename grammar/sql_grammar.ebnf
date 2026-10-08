@@ -1,0 +1,99 @@
+(* sql_grammar_v2.ebnf -- project SQL subset, derived from the SQL-92 BNF (revision 2).
+   Notation as in the report: [ ... ] optional, { ... }* zero or more, | alternation.
+   LL(1): machine-checked (FIRST/FOLLOW, no conflicts; 51 accept/reject test queries pass).
+   The SQL-92 rule each production comes from is named in the right-hand comment. *)
+
+query            ::= select_stmt [ ";" ]                          (* <query specification> + terminator *)
+
+select_stmt      ::= "SELECT" [ "DISTINCT" ] select_list          (* <set quantifier> *)
+                     "FROM" from_list                             (* <from clause> *)
+                     [ "WHERE" condition ]                        (* <where clause> *)
+                     [ "GROUP" "BY" column_list ]                 (* <group by clause> *)
+                     [ "HAVING" having_condition ]                (* <having clause> *)
+                     [ "ORDER" "BY" order_list ]                  (* <sort specification list> *)
+                     [ "LIMIT" INTEGER ]                          (* not SQL-92; common dialect extension *)
+
+(* ---- select list : <select list>, <select sublist>, <qualified asterisk>, <derived column> ---- *)
+select_list      ::= "*" | select_item { "," select_item }*       (* bare * cannot mix with other items *)
+select_item      ::= IDENTIFIER select_item_tail
+                   | agg_expr [ alias_clause ]                    (* aggregate aliases allowed *)
+select_item_tail ::= "." ( "*" | IDENTIFIER [ alias_clause ] )    (* t.*  (no alias)  |  t.col [alias] *)
+                   | [ alias_clause ]                             (* col [alias] *)
+agg_expr         ::= "COUNT" "(" ( "*" | column ) ")"             (* <set function specification> *)
+                   | ( "SUM" | "AVG" | "MIN" | "MAX" ) "(" column ")"
+alias_clause     ::= [ "AS" ] IDENTIFIER                          (* <as clause>, AS optional *)
+column           ::= IDENTIFIER [ "." IDENTIFIER ]                (* <column reference>, left-factored *)
+
+(* ---- FROM : <from clause>, <table reference>, <joined table>; commas and JOINs never mixed ---- *)
+from_list        ::= table_ref [ comma_tail | join_tail ]
+comma_tail       ::= "," table_ref { "," table_ref }*
+join_tail        ::= join_clause { join_clause }*
+table_ref        ::= IDENTIFIER [ alias_clause ]                  (* <table name> [[AS] <correlation name>] *)
+join_clause      ::= join_type "JOIN" table_ref "ON" condition    (* <join specification> *)
+                   | "NATURAL" join_type "JOIN" table_ref
+                   | "CROSS" "JOIN" table_ref
+join_type        ::= [ "INNER" | "LEFT" [ "OUTER" ] ]             (* <join type>; plain JOIN = INNER *)
+
+(* ---- conditions for WHERE and ON : <search condition> -> <boolean term> -> <boolean factor> ---- *)
+condition        ::= and_cond { "OR" and_cond }*
+and_cond         ::= not_cond { "AND" not_cond }*
+not_cond         ::= [ "NOT" ] primary_cond
+primary_cond     ::= "(" condition ")" | predicate                (* <boolean primary> *)
+predicate        ::= operand ( comp_op operand | pred_suffix )
+operand          ::= column | literal                             (* no aggregates here *)
+
+(* ---- conditions for HAVING: same shape, operands may be aggregates (separate chain, shared tails) ---- *)
+having_condition ::= having_and { "OR" having_and }*
+having_and       ::= having_not { "AND" having_not }*
+having_not       ::= [ "NOT" ] having_primary
+having_primary   ::= "(" having_condition ")" | having_predicate
+having_predicate ::= having_operand ( comp_op having_operand | pred_suffix )
+having_operand   ::= agg_expr | column | literal
+
+(* ---- shared tails (literal-only): <comparison>, <in>, <like>, <between>, <null> predicates ---- *)
+comp_op          ::= "=" | "!=" | "<>" | "<" | ">" | "<=" | ">="
+pred_suffix      ::= "IS" [ "NOT" ] "NULL"
+                   | [ "NOT" ] ( "IN" "(" literal { "," literal }* ")"        (* literal list, no subquery *)
+                               | "LIKE" STRING                                (* string-literal pattern only *)
+                               | "BETWEEN" literal "AND" literal )            (* literal bounds only *)
+
+(* ---- GROUP BY / ORDER BY ---- *)
+column_list      ::= column { "," column }*
+order_list       ::= order_item { "," order_item }*
+order_item       ::= ( agg_expr | column ) [ "ASC" | "DESC" ]
+
+(* ---- literals ---- *)
+literal          ::= STRING | [ "-" ] ( INTEGER | FLOAT )         (* unary minus lives here, not in the lexer *)
+
+(* ================= Lexical rules ================= *)
+(* DIGIT      ::= [0-9]                    (named DIGIT because NUMBER already means a whole constant in the report)
+   INTEGER    ::= DIGIT { DIGIT }*
+   FLOAT      ::= INTEGER "." INTEGER
+   Longest match: FLOAT is tried before INTEGER. Nothing else is special-cased: "007" is an INTEGER,
+   "3." lexes as INTEGER then ".", ".5" as "." then INTEGER, "1.2.3" as FLOAT "." INTEGER, "12abc" as
+   INTEGER then IDENTIFIER -- all of these are rejected by the PARSER as unexpected tokens.
+   IDENTIFIER ::= ( letter | "_" ) { letter | DIGIT | "_" }*      STRING ::= "'" { any char except "'" }* "'"
+   "--" starts a comment to end of line, so "x = --5" is a comment, not a double minus. *)
+(* Keywords (case-insensitive): SELECT DISTINCT FROM WHERE GROUP BY HAVING ORDER LIMIT JOIN INNER LEFT OUTER NATURAL
+     CROSS ON AND OR NOT IN LIKE BETWEEN IS NULL AS ASC DESC
+   Aggregate names: COUNT SUM AVG MIN MAX
+   FLAGGED (reserved, unsupported -- lexed as keywords that no rule accepts, so they fail loudly with an
+     "unsupported" diagnostic instead of silently becoming aliases):
+     RIGHT FULL UNION INTERSECT EXCEPT USING
+   Operators: = != <> < > <= >=      Punctuation: ( ) , . * ; -      Token classes: IDENTIFIER INTEGER FLOAT STRING EOF *)
+
+(* ================= Deliberate departures from SQL-92 ================= *)
+(* - Commas and JOIN clauses cannot be mixed in one FROM list (SQL-92 allows it).
+   - Join types: INNER, LEFT [OUTER], NATURAL, CROSS only. RIGHT / FULL / USING are flagged.
+   - HAVING has its own condition chain; SQL-92 uses one <search condition> everywhere and forbids aggregates in
+     WHERE / ON semantically. Here WHERE / ON reject aggregates in the grammar itself.
+   - IN takes literals only (no subquery); LIKE takes a string literal; BETWEEN takes literals.
+   - Out: COUNT(DISTINCT x), arithmetic, CASE, subqueries, set operations. *)
+
+(* ================= Left to the semantic phase ================= *)
+(* - an unqualified ORDER BY name may refer to a SELECT alias
+   - aliases MAY equal their own table or column name (customers AS customers, name AS name, SUM(price) AS price);
+     aggregate aliases follow the same rule. Still open: alias vs ANOTHER table's name, duplicate aliases in one FROM
+   - NATURAL JOIN: joins on same-named columns; flag it when the shared columns are not a foreign-key pair
+   - CROSS and comma joins have no ON to check
+   - LIKE needs a VARCHAR operand; BETWEEN / IN / comparisons need compatible types (DATE vs string coercion) *)

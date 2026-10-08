@@ -1,0 +1,156 @@
+1. Prerequisites
+Python 3.12 and the standard library only: dataclasses, enum, typing, plus unittest for tests (pytest is optional). re is also standard library, but only needed if you pick regex scanning (D1 below).
+No third-party packages. Lexer generators (PLY, Flex, ANTLR) are excluded by the plan’s zero-dependency principle.
+Files from the plan’s layout: lexer/__init__.py, tokens.py, lexer.py, errors.py, and tests/test_lexer.py.
+Agree with Gaurav before coding, where DiagnosticRecord lives. The plan puts it in semantic/errors.py, so the lexer would import from semantic.
+Leave it there: rejected because the lexer and parser would depend on a later phase. Picked because it matches the plan layout.
+A top-level shared module: rejected because it departs from the layout. Picked because no phase depends on another.
+A copy per package: rejected because the copies drift. Picked because each package is independent.
+2. Expected output
+
+Contract: tokenize(source) returns a list of tokens ending with an EOF token, or raises LexicalError carrying one diagnostic record.
+
+Token fields: type, value, line, column (1-based, at the token’s first character). An offset index is optional.
+
+Token types: KEYWORD, AGG_FUNC, IDENTIFIER, INTEGER, FLOAT, STRING, OPERATOR, PUNCTUATION, EOF. The flagged words need a representation (see step 1).
+
+Value rules (settle in step 2):
+
+Keywords and aggregate names are stored uppercase.
+Identifiers keep the user’s spelling.
+Numbers keep their text.
+Strings drop their quotes (so the formatter re-adds them), or keep the raw text.
+
+Example. SELECT c.name FROM customers c WHERE id >= -3.5; should give:
+
+Type	    Value	    Line:Col
+KEYWORD	    SELECT	    1:1
+IDENTIFIER	c	        1:8
+PUNCTUATION	.	        1:9
+IDENTIFIER	name	    1:10
+KEYWORD	    FROM	    1:15
+IDENTIFIER	customers	1:20
+IDENTIFIER	c	        1:30
+KEYWORD	    WHERE	    1:32
+IDENTIFIER	id	        1:38
+OPERATOR	>=	        1:41
+PUNCTUATION	-	        1:44
+FLOAT	    3.5	        1:45
+PUNCTUATION	;	        1:48
+EOF		                1:49
+
+Error example. SELECT # FROM t raises at 1:8 with ERR_ILLEGAL_CHARACTER, the found character #, and the source line as context.
+
+3. Skeleton (pseudocode)
+class Lexer:
+    state: source, pos, line=1, col=1
+    peek(k=0): char at pos+k, or NONE at end
+    advance(): take char; if "\n": line+=1, col=1 else col+=1
+
+    tokenize():
+        tokens = []
+        loop:
+            skip_trivia()
+            if at end: break
+            (L, C) = (line, col)                  # token start
+            c = peek()
+            if letter(c) or c == "_":  tokens += read_word(L, C)
+            elif digit(c):             tokens += read_number(L, C)
+            elif c == "'":             tokens += read_string(L, C)
+            elif c in "<>!=":          tokens += read_operator(L, C)
+            elif c in "(),.*;-":       tokens += PUNCT(c, L, C)
+            else: error(ILLEGAL_CHARACTER, L, C, found=c)
+        tokens += EOF(line, col)
+        return tokens
+
+    skip_trivia():
+        repeat while progress:
+            consume whitespace
+            if peek()=="-" and peek(1)=="-": consume to end of line (or EOF)
+
+    read_word():   consume letters/digits/_ ; up = uppercase(text)
+                   AGG_FUNC if up in aggregates; KEYWORD if up in keywords;
+                   FLAGGED if up in unsupported; else IDENTIFIER(text)
+
+    read_number(): consume digits
+                   if peek()=="." and digit(peek(1)): consume "." and digits -> FLOAT
+                   else -> INTEGER                 # a lone "." stays for the next token
+
+    read_string(): consume opening quote; consume until closing quote
+                   if end reached first: error(UNTERMINATED_STRING at the opening quote)
+
+    read_operator(): "<" -> "<=" | "<>" | "<";  ">" -> ">=" | ">";  "=" -> "=";
+                     "!" -> "!=" or error
+
+Because skip_trivia consumes -- first, a - that reaches the dispatch is always a single minus.
+
+4. Steps and decision points
+
+Options list reject reasons first. I’m not picking for you.
+
+Step 1: Fix the contracts. Settle the DiagnosticRecord home (section 1), the token-type list, and how flagged words are represented.
+
+Flagged words as a separate UNSUPPORTED type: rejected because the parser needs one more type. Picked because it can raise a clean “not supported” diagnostic.
+KEYWORD plus a set check: rejected because every parser site must check the set. Picked because there are fewer types.
+Token granularity: a single KEYWORD type with a string value (rejected: the parser compares strings; picked: matches report §6.1) versus one enum member per keyword (rejected: about 35 members; picked: the parser matches by type).
+
+Step 2: Token model (tokens.py). An enum and a dataclass.
+
+Numbers: keep the text (rejected: the parser converts; picked: 1.50 formats back unchanged) or convert in the lexer (rejected: rounding and lost formatting; picked: parser gets values ready).
+
+Step 3: Cursor and positions.
+
+Decide how \r\n counts (one newline), whether a lone \r is a newline, and how tabs count (one column, or expanded).
+Always record the start position before consuming a token.
+
+Step 4: Whitespace and comments.
+
+Define whitespace as space, tab, \r, \n only (rejected: pasted non-breaking spaces are flagged as illegal; picked: no silent surprises) or use str.isspace() (rejected: accepts non-breaking spaces and other Unicode whitespace silently; picked: tolerates pasted text).
+A -- comment at end of file with no newline must still end cleanly. Block comments stay out of scope (/ is illegal).
+
+Step 5: Words.
+
+Read the whole word first, then look it up, so selection and order_date stay identifiers. The lookup is case-insensitive.
+Alphabet: ASCII letters only (rejected: non-English identifiers fail; picked: smart quotes and look-alike characters from pasted LLM output become errors) or Unicode letters (rejected: those characters silently become identifiers; picked: broader names).
+COUNT, SUM, AVG, MIN, MAX as always-AGG_FUNC: rejected because a column named count or min becomes impossible. Picked because the grammar’s FIRST sets rely on a separate aggregate type. The alternative, making them aggregates only when followed by (, needs lookahead past whitespace.
+
+Step 6: Numbers. Use the grammar file’s definition: DIGIT+ and DIGIT+ "." DIGIT+, never signed.
+
+Letters directly after a number (12abc): leave to the parser (rejected: the error names abc as a stray identifier; picked: the lexer follows the grammar file exactly) or raise a lexical error (rejected: the lexer departs from the grammar file and needs an extra lookahead check; picked: a precise message at the number).
+
+Step 7: Strings.
+
+The grammar file has no escape, so 'O''Brien' lexes as two strings and the parser rejects it. Supporting '' is rejected because the STRING rule changes. It is picked because it’s standard SQL and apostrophes appear in names.
+Newline inside a string: allow it (rejected: an unclosed quote then swallows the rest of the file; picked: multi-line text) or treat it as unterminated (rejected: legitimate multi-line strings fail; picked: errors stay local).
+Always report the error at the opening quote.
+
+Step 8: Operators and punctuation.
+
+! alone: lexical error (rejected: adds an error code; picked: no stray ! token reaches the parser) or an operator token the parser rejects.
+==: two = tokens that the parser rejects (rejected: error wording is “unexpected =”, which is not very clear; picked: the spec’s “invalid operator” test counts as a syntax error) or a lexical error naming ==.
+=< and => become two tokens in the same way.
+
+Step 9: Errors.
+
+Fail-fast (the report’s §6.2 “immediate LexicalError”): rejected because only one error appears per run. Picked because it’s simple and keeps the token list trustworthy.
+Collect all: rejected because it needs recovery rules and the resulting tokens can mislead the parser. Picked because every illegal character is shown at once.
+Choose the codes (ERR_ILLEGAL_CHARACTER, ERR_UNTERMINATED_STRING, and one for malformed numbers if you chose that in step 6) and fill found, expected, and context (the source line).
+
+Step 10: Interface and EOF.
+
+Full list: rejected because the parser peeks into an array, which is more than LL(1) needs. Picked because lexical errors always come before syntax errors, which matches the report’s test 5.
+Generator: rejected because peeking needs buffering. Picked because it’s lazy.
+next_token() on demand: rejected because a syntax error early in the query hides a later illegal character. Picked because it’s the textbook structure.
+The EOF token takes the position just after the last character.
+
+Step 11: Tests (tests/test_lexer.py).
+
+Mixed-case keywords, selection, order_date, and count.
+Positions on a multi-line query: SELECT *\nFROM t puts FROM at 2:1.
+Numbers: 42, 3.14, 007, 3. (INTEGER then .), .5, 1.2.3, 12abc.
+Operators: <= versus < =, <>, !=, ! alone, ==.
+Strings: '', 'abc unterminated, 'O''Brien'.
+Comments: x = --5 and -- note at end of file.
+Illegal characters: #, @, $, ", backtick, /, a smart quote.
+Flagged words: RIGHT, FULL, USING, UNION.
+Every query in sql_grammar_v2.ebnf’s test list lexes without error.

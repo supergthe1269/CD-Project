@@ -129,6 +129,50 @@ class TestValidationMatrix(unittest.TestCase):
         self.assertEqual(err.line, 1)
         self.assertEqual(err.column, 8)
 
+    def test_case_8_target_code_synthesis_nosql(self):
+        """Case 8: Target Code Synthesis - SQL AST to MongoDB MQL Transpilation."""
+        from codegen.nosql_transpiler import NoSQLTranspiler
+        query = "SELECT name, city FROM customers WHERE city = 'Delhi' ORDER BY name ASC LIMIT 10"
+        tokens = Lexer(query).tokenize()
+        ast = Parser(tokens, query).parse()
+        SemanticChecker(self.catalog, query).validate(ast)
+
+        mql_res = NoSQLTranspiler().transpile(ast)
+        self.assertEqual(mql_res.operation, "find")
+        self.assertEqual(mql_res.collection, "customers")
+        self.assertEqual(mql_res.filter_doc, {"city": "Delhi"})
+        self.assertEqual(mql_res.projection_doc, {"name": 1, "city": 1, "_id": 0})
+        self.assertEqual(mql_res.sort_doc, {"name": 1})
+        self.assertEqual(mql_res.limit_val, 10)
+        self.assertIn("db.customers.find", mql_res.mql_string)
+
+    def test_case_9_direct_nosql_validation(self):
+        """Case 9: Direct NoSQL Validation - Direct MQL parsing, schema checking, and formatting."""
+        from nosql import NoSQLLexer, NoSQLParser, NoSQLSemanticChecker, NoSQLFormatter
+        query = 'db.customers.find({ "city": "Delhi" }, { "name": 1, "city": 1 }).sort({ "name": 1 }).limit(10);'
+        tokens = NoSQLLexer(query).tokenize()
+        ast = NoSQLParser(tokens, query).parse()
+        notices = NoSQLSemanticChecker(self.catalog).validate(ast)
+        self.assertEqual(len(notices), 0)
+
+        formatted = NoSQLFormatter().format(ast)
+        self.assertIn("db.customers.find", formatted)
+        self.assertIn('.sort({"name": 1})', formatted)
+
+    def test_case_10_nosql_typo_catching(self):
+        """Case 10: NoSQL Semantic Typo Catching - Catching collection & operator typos."""
+        from nosql import NoSQLLexer, NoSQLParser, NoSQLSemanticChecker, NoSQLSemanticError
+        query = 'db.cusotmers.find({ "signup_date": { "$gtt": "2024-01-01" } });'
+        tokens = NoSQLLexer(query).tokenize()
+        ast = NoSQLParser(tokens, query).parse()
+
+        with self.assertRaises(NoSQLSemanticError) as ctx:
+            NoSQLSemanticChecker(self.catalog).validate(ast)
+
+        err = ctx.exception
+        self.assertEqual(err.error_code, "ERR_NOSQL_COLLECTION_NOT_FOUND")
+        self.assertEqual(err.suggestion, "customers")
+
 
 if __name__ == "__main__":
     unittest.main()

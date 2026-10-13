@@ -26,6 +26,16 @@ from semantic.catalog import DatabaseCatalog, create_default_catalog
 from semantic.checker import SemanticChecker
 from semantic.errors import SemanticError
 from formatter.pretty_printer import SQLFormatter
+from codegen.nosql_transpiler import NoSQLTranspiler, MQLResult
+from nosql import (
+    NoSQLLexer,
+    NoSQLParser,
+    NoSQLSemanticChecker,
+    NoSQLFormatter,
+    NoSQLLexicalError,
+    NoSQLParserSyntaxError,
+    NoSQLSemanticError,
+)
 from ai.nl_to_sql import NLToSQLTranslator
 from ai.error_explainer import AIErrorExplainer
 
@@ -54,7 +64,7 @@ def print_banner():
 
 
 class CompilerPipeline:
-    """End-to-end compiler pipeline coordinating all phases."""
+    """End-to-end multi-model compiler pipeline coordinating all SQL & NoSQL phases."""
 
     def __init__(self, catalog: Optional[DatabaseCatalog] = None, auto_correct: bool = False, enable_ai: bool = True):
         self.catalog = catalog or create_default_catalog()
@@ -63,11 +73,13 @@ class CompilerPipeline:
         self.nl_translator = NLToSQLTranslator(catalog=self.catalog) if enable_ai else None
         self.ai_explainer = AIErrorExplainer() if enable_ai else None
         self.formatter = SQLFormatter()
+        self.nosql_transpiler = NoSQLTranspiler()
+        self.nosql_formatter = NoSQLFormatter()
 
-    def process_query(self, query: str, verbose: bool = False) -> Tuple[bool, Optional[str], Optional[DiagnosticRecord]]:
+    def process_query(self, query: str, verbose: bool = False, emit_nosql: bool = True) -> Tuple[bool, Optional[str], Optional[DiagnosticRecord]]:
         """
-        Executes query through the full compiler pipeline:
-        Lexer -> Parser -> Semantic Checker -> Formatter.
+        Executes SQL query through the full compiler pipeline:
+        Lexer -> Parser -> Semantic Checker -> SQL Formatter -> NoSQL Code Generation (Synthesis).
         Returns: (success: bool, formatted_sql_or_output: str, diagnostic: Optional[DiagnosticRecord])
         """
         if verbose:
@@ -116,9 +128,68 @@ class CompilerPipeline:
         formatted_sql = self.formatter.format(ast)
         if verbose:
             print(f"\n{Colors.GREEN}[✓] Phase 4: AST Formatter Succeeded (Canonical Output):{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.CYAN}{formatted_sql}{Colors.RESET}\n")
+            print(f"{Colors.BOLD}{Colors.CYAN}{formatted_sql}{Colors.RESET}")
+
+        # ---------------- Phase 5: Target Code Generation (NoSQL Synthesis) ----
+        if emit_nosql:
+            mql_res = self.nosql_transpiler.transpile(ast)
+            if verbose:
+                print(f"\n{Colors.GREEN}[✓] Phase 5: Target Code Generation (MongoDB MQL Synthesis):{Colors.RESET}")
+                print(f"{Colors.BOLD}{Colors.YELLOW}{mql_res.mql_string}{Colors.RESET}")
+                print(f"\n{Colors.DIM}PyMongo Driver Target:\n  {mql_res.to_pymongo()}{Colors.RESET}\n")
 
         return True, formatted_sql, None
+
+    def process_nosql_query(self, query: str, verbose: bool = False) -> Tuple[bool, Optional[str], Optional[DiagnosticRecord]]:
+        """
+        Executes MongoDB MQL query through the direct NoSQL compiler pipeline:
+        NoSQLLexer -> NoSQLParser -> NoSQLSemanticChecker -> NoSQLFormatter.
+        Returns: (success: bool, canonical_mql: str, diagnostic: Optional[DiagnosticRecord])
+        """
+        if verbose:
+            print(f"\n{Colors.BOLD}Input NoSQL Query:{Colors.RESET}\n  {query}\n")
+
+        # ---------------- Phase 1: NoSQL Lexer ----------------
+        try:
+            lexer = NoSQLLexer(query)
+            tokens = lexer.tokenize()
+            if verbose:
+                print(f"{Colors.GREEN}[✓] Phase 1: NoSQL Lexer Succeeded{Colors.RESET} ({len(tokens)} tokens generated)")
+        except NoSQLLexicalError as le:
+            diag = le.to_diagnostic()
+            self._handle_failure(query, diag)
+            return False, None, diag
+
+        # ---------------- Phase 2: NoSQL Parser ---------------
+        try:
+            parser = NoSQLParser(tokens, query)
+            ast = parser.parse()
+            if verbose:
+                print(f"\n{Colors.GREEN}[✓] Phase 2: NoSQL Parser Succeeded{Colors.RESET} (AST produced)")
+                print(f"{Colors.DIM}{ast.format_tree()}{Colors.RESET}")
+        except NoSQLParserSyntaxError as se:
+            diag = se.to_diagnostic()
+            self._handle_failure(query, diag)
+            return False, None, diag
+
+        # ---------------- Phase 3: NoSQL Semantic Analysis ----
+        try:
+            checker = NoSQLSemanticChecker(self.catalog, auto_correct=self.auto_correct)
+            checker.validate(ast)
+            if verbose:
+                print(f"\n{Colors.GREEN}[✓] Phase 3: NoSQL Semantic Validation Succeeded (Catalog Verified){Colors.RESET}")
+        except NoSQLSemanticError as sme:
+            diag = sme.to_diagnostic()
+            self._handle_failure(query, diag)
+            return False, None, diag
+
+        # ---------------- Phase 4: NoSQL Canonical Formatter --
+        formatted_mql = self.nosql_formatter.format(ast)
+        if verbose:
+            print(f"\n{Colors.GREEN}[✓] Phase 4: NoSQL Formatter Succeeded (Canonical MQL):{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.YELLOW}{formatted_mql}{Colors.RESET}\n")
+
+        return True, formatted_mql, None
 
     def _handle_failure(self, query: str, diag: DiagnosticRecord):
         print(f"\n{Colors.RED}[✗] Pipeline Failed in Phase: {diag.phase}{Colors.RESET}")
@@ -132,14 +203,15 @@ class CompilerPipeline:
 
 
 def run_validation_matrix():
-    """Runs the 7 test scenarios from Section 11 of the project report."""
-    print(f"\n{Colors.BOLD}{Colors.CYAN}--- Running Evaluation Matrix (7 Scenarios from Report Section 11) ---{Colors.RESET}\n")
+    """Runs the 10 evaluation scenarios (7 SQL + 3 NoSQL Review-2 extensions)."""
+    print(f"\n{Colors.BOLD}{Colors.CYAN}--- Running Evaluation Matrix (10 Scenarios: SQL & NoSQL Extensions) ---{Colors.RESET}\n")
 
     cases = [
         {
             "id": 1,
             "category": "Simple Projection",
             "query": "SELECT * FROM customers;",
+            "is_nosql": False,
             "expected_pass": True,
             "verification": "Wildcard resolution, single-table parsing",
         },
@@ -147,6 +219,7 @@ def run_validation_matrix():
             "id": 2,
             "category": "Boolean Precedence",
             "query": "SELECT name FROM customers WHERE city = 'Delhi' AND signup_date > '2024-01-01'",
+            "is_nosql": False,
             "expected_pass": True,
             "verification": "Parsing of nested AND / OR expressions",
         },
@@ -154,6 +227,7 @@ def run_validation_matrix():
             "id": 3,
             "category": "Join Resolution",
             "query": "SELECT c.name, o.status FROM customers c JOIN orders o ON c.id = o.customer_id",
+            "is_nosql": False,
             "expected_pass": True,
             "verification": "Implicit aliases, foreign key relationship validation",
         },
@@ -161,6 +235,7 @@ def run_validation_matrix():
             "id": 4,
             "category": "Group By Validation",
             "query": "SELECT city, COUNT(*) FROM customers GROUP BY city HAVING COUNT(*) > 5",
+            "is_nosql": False,
             "expected_pass": True,
             "verification": "Aggregate and non-aggregate column tracking",
         },
@@ -168,6 +243,7 @@ def run_validation_matrix():
             "id": 5,
             "category": "Syntax Error Catch",
             "query": "SELECT name customers WHERE id = 1",
+            "is_nosql": False,
             "expected_pass": False,
             "verification": "Missing FROM keyword",
         },
@@ -175,6 +251,7 @@ def run_validation_matrix():
             "id": 6,
             "category": "Semantic Type Mismatch",
             "query": "SELECT name FROM customers WHERE signup_date = 42",
+            "is_nosql": False,
             "expected_pass": False,
             "verification": "Type verification across relational operators (DATE vs INT)",
         },
@@ -182,8 +259,33 @@ def run_validation_matrix():
             "id": 7,
             "category": "Hallucination Detection",
             "query": "SELECT full_name, order_count FROM customers",
+            "is_nosql": False,
             "expected_pass": False,
             "verification": "Plausible LLM hallucination catching",
+        },
+        {
+            "id": 8,
+            "category": "Target Code Synthesis (SQL -> NoSQL MQL)",
+            "query": "SELECT name, city FROM customers WHERE city = 'Delhi' ORDER BY name ASC LIMIT 10",
+            "is_nosql": False,
+            "expected_pass": True,
+            "verification": "Target code synthesis to MongoDB find() with projection, sort, and limit",
+        },
+        {
+            "id": 9,
+            "category": "Direct NoSQL Query Validation (MQL find)",
+            "query": 'db.customers.find({ "city": "Delhi" }, { "name": 1, "city": 1 }).sort({ "name": 1 }).limit(10);',
+            "is_nosql": True,
+            "expected_pass": True,
+            "verification": "Direct MQL parsing, schema attribute validation, and pretty-printing",
+        },
+        {
+            "id": 10,
+            "category": "NoSQL Semantic Typo Catching",
+            "query": 'db.cusotmers.find({ "signup_date": { "$gtt": "2024-01-01" } });',
+            "is_nosql": True,
+            "expected_pass": False,
+            "verification": "Catching collection typo (cusotmers) and operator typo ($gtt) with fuzzy recovery",
         },
     ]
 
@@ -195,7 +297,10 @@ def run_validation_matrix():
         print(f"  Verification Point: {c['verification']}")
         print(f"  Query: {Colors.DIM}{c['query']}{Colors.RESET}")
 
-        success, output, diag = pipeline.process_query(c["query"], verbose=False)
+        if c.get("is_nosql"):
+            success, output, diag = pipeline.process_nosql_query(c["query"], verbose=False)
+        else:
+            success, output, diag = pipeline.process_query(c["query"], verbose=False)
 
         if success == c["expected_pass"]:
             print(f"  Result: {Colors.GREEN}[PASS]{Colors.RESET} (Matches expected outcome)\n")
@@ -207,11 +312,11 @@ def run_validation_matrix():
 
 
 def run_demo():
-    """Runs a complete demonstration of the compiler pipeline."""
+    """Runs a complete demonstration of the compiler pipeline (SQL + NoSQL)."""
     print_banner()
     pipeline = CompilerPipeline(auto_correct=True, enable_ai=True)
 
-    print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 1: Valid Complex Analytical Query ==={Colors.RESET}")
+    print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 1: Valid Complex Analytical Query (SQL -> Formatted SQL + MQL) ==={Colors.RESET}")
     sample_valid = (
         "select c.name, count(*) from customers c join orders o on c.id=o.customer_id "
         "where c.city='Delhi' group by c.name having count(*)>2 order by c.name asc limit 10;"
@@ -222,7 +327,7 @@ def run_demo():
     sample_hallucination = "SELECT full_name, total_revenue FROM customers WHERE city = 'Delhi'"
     pipeline.process_query(sample_hallucination, verbose=True)
 
-    print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 3: AST-Based Fuzzy Auto-Correction (Novelty Feature) ==={Colors.RESET}")
+    print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 3: AST-Based Fuzzy Auto-Correction ==={Colors.RESET}")
     sample_fuzzy = "SELECT c.name, o.status FROM customers c JOIN orders o ON c.id = o.cust_id"
     pipeline.process_query(sample_fuzzy, verbose=True)
 
@@ -231,17 +336,26 @@ def run_demo():
     print(f"Natural Language Question: {Colors.CYAN}{nl_question}{Colors.RESET}")
     candidate_sql = pipeline.nl_translator.translate(nl_question)
     print(f"Candidate SQL proposed by AI: {Colors.YELLOW}{candidate_sql}{Colors.RESET}")
-    print(f"Passing candidate SQL to the deterministic compiler gatekeeper...")
+    print("Passing candidate SQL to the deterministic compiler gatekeeper...")
     pipeline.process_query(candidate_sql, verbose=True)
+
+    print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 5: Direct NoSQL Validation & Formatting ==={Colors.RESET}")
+    nosql_valid = 'db.customers.find({ "city": "Delhi", "signup_date": { "$gt": "2024-01-01" } }, { "name": 1, "city": 1 }).sort({ "name": 1 }).limit(10);'
+    pipeline.process_nosql_query(nosql_valid, verbose=True)
+
+    print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 6: NoSQL Typo Catching & AI Error Mentor ==={Colors.RESET}")
+    nosql_invalid = 'db.customers.find({ "signup_date": { "$gtt": "2024-01-01" } });'
+    pipeline.process_nosql_query(nosql_invalid, verbose=True)
 
 
 def run_repl():
-    """Interactive command-line loop for testing queries."""
+    """Interactive command-line loop for testing SQL & NoSQL queries."""
     print_banner()
     print("Commands:")
-    print("  - Type any SQL query to validate, parse, and format it.")
-    print("  - Prefix with 'nl:' to test Natural Language to SQL translation.")
-    print("  - Type 'matrix' to run the 7-case report validation suite.")
+    print("  - Type any SQL query to validate, parse, format, and synthesize MongoDB MQL.")
+    print("  - Type any NoSQL query (starts with 'db.' or '{') to validate and format MQL.")
+    print("  - Prefix with 'nl:' to test Natural Language translation.")
+    print("  - Type 'matrix' to run the 10-case evaluation matrix.")
     print("  - Type 'demo' to run the full presentation.")
     print("  - Type 'catalog' to inspect the database schema.")
     print("  - Type 'exit' or 'quit' to close.\n")
@@ -250,11 +364,11 @@ def run_repl():
 
     while True:
         try:
-            user_input = input(f"{Colors.BOLD}sql-validator > {Colors.RESET}").strip()
+            user_input = input(f"{Colors.BOLD}query-compiler > {Colors.RESET}").strip()
             if not user_input:
                 continue
             if user_input.lower() in ("exit", "quit"):
-                print("Exiting SQL Validator. Goodbye!")
+                print("Exiting Query Compiler. Goodbye!")
                 break
             if user_input.lower() == "matrix":
                 run_validation_matrix()
@@ -263,7 +377,7 @@ def run_repl():
                 run_demo()
                 continue
             if user_input.lower() == "catalog":
-                print(f"\n{Colors.BOLD}Active Database Catalog:{Colors.RESET}")
+                print(f"\n{Colors.BOLD}Active Database Catalog / Collections:{Colors.RESET}")
                 for tbl_name in pipeline.catalog.table_names():
                     tbl = pipeline.catalog.get_table(tbl_name)
                     print(f"  {Colors.CYAN}{tbl.name}{Colors.RESET}:")
@@ -280,19 +394,23 @@ def run_repl():
                 candidate = pipeline.nl_translator.translate(nl_query)
                 print(f"Candidate Query: {Colors.YELLOW}{candidate}{Colors.RESET}")
                 pipeline.process_query(candidate, verbose=True)
+            elif user_input.startswith("db.") or user_input.startswith("{") or user_input.lower().startswith("nosql:"):
+                nosql_q = user_input[6:].strip() if user_input.lower().startswith("nosql:") else user_input
+                pipeline.process_nosql_query(nosql_q, verbose=True)
             else:
                 pipeline.process_query(user_input, verbose=True)
 
         except (KeyboardInterrupt, EOFError):
-            print("\nExiting SQL Validator.")
+            print("\nExiting Query Compiler.")
             break
 
 
 def main():
-    parser = argparse.ArgumentParser(description="AI-Augmented SQL Query Validator & Formatter")
+    parser = argparse.ArgumentParser(description="Multi-Model Query Compiler & Validator (SQL + NoSQL MongoDB)")
     parser.add_argument("--demo", action="store_true", help="Run end-to-end pipeline demonstration")
-    parser.add_argument("--matrix", "--test", action="store_true", help="Run the 7 report evaluation matrix cases")
-    parser.add_argument("--query", "--sql", type=str, help="Process a direct SQL query")
+    parser.add_argument("--matrix", "--test", action="store_true", help="Run the 10 evaluation matrix cases")
+    parser.add_argument("--query", "--sql", nargs="+", type=str, help="Process a direct SQL query")
+    parser.add_argument("--nosql", nargs="+", type=str, help="Process a direct NoSQL (MongoDB MQL) query")
     parser.add_argument("--nl", type=str, help="Translate and validate a Natural Language question")
     parser.add_argument("--auto-correct", action="store_true", help="Enable AST-based fuzzy auto-correction")
     parser.add_argument("--no-ai", action="store_true", help="Disable all external AI edge components")
@@ -303,9 +421,14 @@ def main():
         run_demo()
     elif args.matrix:
         run_validation_matrix()
-    elif args.query:
+    elif args.nosql:
+        nosql_query = " ".join(args.nosql) if isinstance(args.nosql, list) else args.nosql
         pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai)
-        pipeline.process_query(args.query, verbose=True)
+        pipeline.process_nosql_query(nosql_query, verbose=True)
+    elif args.query:
+        sql_query = " ".join(args.query) if isinstance(args.query, list) else args.query
+        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai)
+        pipeline.process_query(sql_query, verbose=True)
     elif args.nl:
         pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai)
         candidate = pipeline.nl_translator.translate(args.nl)

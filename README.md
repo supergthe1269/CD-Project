@@ -1,84 +1,85 @@
-# AI-Augmented SQL Query Validator & Formatter
+# AI-Augmented Multi-Model Query Compiler & Validator (SQL + NoSQL MongoDB)
 
-**Course:** BCSE307P — Compiler Design Lab
+**Course:** BCSE307P — Compiler Design Lab  
 **Team:**
 | Reg. No | Name | Contribution |
 |---|---|---|
-| 24BCB0020 | Gaurav Gopichand Nanhe | Grammar (EBNF), lexer, recursive-descent parser & AST, code formatter |
-| 24BAI0351 | V Surya | Symbol table / catalog, semantic checker, AI prompt design, error-format design |
+| 24BCB0020 | Gaurav Gopichand Nanhe | Grammar (EBNF), lexer, recursive-descent parser & AST, code formatter, NoSQL transpiler |
+| 24BAI0351 | V Surya | Symbol table / catalog, semantic checker, NoSQL validator, AI prompt & error mentor design |
+
+---
 
 ## Overview
 
-A hand-built compiler pipeline for a SQL subset, with AI used only at the edges — never inside the compiler itself.
+A hand-built compiler pipeline and transcompiler supporting both **Relational SQL** and **NoSQL (MongoDB Query Language - MQL)**, with AI used strictly at the edges — never inside the compiler itself.
 
-A natural-language question can optionally be turned into a candidate SQL query by an LLM. That query, like any other input, is then tokenized, parsed into an AST, and checked against a real schema by a from-scratch compiler. Only a query that passes every check gets formatted and returned. If a query fails, the compiler's structured error is handed to an LLM, which turns it into a short, plain-English explanation — the raw error is always shown too.
+1. **SQL Front-End & Target Code Synthesis (Transpiler):** Tokenizes, parses, and semantically validates SQL queries against a schema catalog, formats canonical SQL, and **compiles the validated AST into executable MongoDB MQL (`find` queries and `aggregate` pipelines)** with PyMongo code generation.
+2. **Direct NoSQL Validator:** Accepts raw MongoDB MQL shell syntax or JSON documents (`db.collection.find(...)` / `db.collection.aggregate(...)`), parses them through a dedicated NoSQL lexer & parser into an MQL AST, and performs semantic validation (collection existence, field existence, operator validity with fuzzy typo recovery, and type checks).
+3. **AI Mentor Edge:** If validation fails, structured compiler diagnostic records are explained in plain English by the AI mentor without masking raw compiler coordinates.
 
-**Core idea: AI proposes, the compiler decides.** No stage of validation is ever delegated to the AI, and the compiler works completely on its own if every AI call is disabled.
+**Core idea: AI proposes, the compiler decides.**
 
-## Why
+---
 
-LLM-generated SQL frequently looks right and is not: invented column names, broken joins, type mismatches. Asking an AI to double-check its own query doesn't fix this — it just repeats or varies the same mistake. A deterministic compiler, built the way real compilers are built, is what actually catches it.
-
-## Pipeline
+## Architectural Pipeline
 
 ```
-Natural language
-      |
-      v
-   LLM (candidate SQL) ----------- untrusted input, same as typed SQL
-      |
-      v
-   Lexer            -> token stream (with line/column tracking)
-      |
-      v
-   Parser           -> Abstract Syntax Tree (recursive descent)
-      |
-      v
-   Semantic Checker -> validated against schema/symbol table
-      |
-   ___|___
-  |       |
- pass    fail
-  |       |
-  v       v
-Formatter   AI error explainer (+ the raw structured error, always)
+[SQL Input / NL Query]                        [Direct NoSQL MQL Input]
+        |                                                 |
+        v                                                 v
+  SQL Lexer -> Token stream                     NoSQL Lexer -> Token stream
+        |                                                 |
+        v                                                 v
+  SQL Parser -> SQL AST (Recursive Descent)     NoSQL Parser -> NoSQL AST
+        |                                                 |
+        v                                                 v
+  SQL Semantic Checker (Catalog/FK/Types)       NoSQL Semantic Checker (Collection/Fields/Operators)
+        |                                                 |
+   _____|_____                                       _____|_____
+  |           |                                     |           |
+Pass        Fail                                   Pass        Fail
+  |           |                                     |           |
+  v           v                                     v           v
+SQL Formatter AI Error Mentor                 NoSQL Formatter  AI Error Mentor
+  |           (+ Raw Diagnostics)                   |          (+ Raw Diagnostics)
+  v                                                 v
+Target Code Generator (NoSQL Transpiler)     Canonical MQL Shell Output
   |
-  v
-Clean, formatted SQL
+  +---> MongoDB find() / aggregate()
+  +---> PyMongo Python target
 ```
 
-## Compiler phases
+---
 
-- **Lexer** — hand-written tokenizer; no generator tools (no Flex/ANTLR). Tracks exact line and column for every token.
-- **Parser** — recursive-descent, builds an AST directly from the EBNF grammar. Every grammar rule is a function.
-- **Semantic checker** — walks the AST against an in-memory schema/symbol table and enforces:
-  - table existence
-  - column existence (and ambiguity across joins)
-  - type compatibility in comparisons
-  - join conditions match declared foreign keys
-  - non-aggregated SELECT columns appear in GROUP BY
-- **Formatter** — reads the validated AST (not the original text) and reprints it: capitalized keywords, one clause per line, indented AND/OR conditions.
+## Compiler Phases
 
-## SQL subset
+### SQL Compiler & Transpiler
+- **Lexer:** Character-by-character scanner with exact line and column tracking.
+- **Parser:** Predictive recursive-descent parser building strongly-typed AST nodes (`SelectStmtNode`, `ConditionNode`, etc.).
+- **Semantic Checker:** Enforces table/column existence, type compatibility, valid FK join relationships, and GROUP BY consistency.
+- **Formatter:** Canonical pretty-printer unparsing AST back to standard capitalized SQL.
+- **Target Code Generator (`codegen/nosql_transpiler.py`):** Target code synthesis translating validated SQL AST into:
+  - `find()` with filters (`$eq`, `$gt`, `$ne`, etc.), projections, `.sort()`, and `.limit()`.
+  - `aggregate()` pipelines with `$group`, `$project`, `$match` (HAVING), and multi-collection `$lookup` / `$unwind` (JOINs).
+  - Ready-to-run PyMongo Python snippets.
 
-**In scope:** SELECT (incl. `*`, aliases), FROM, INNER/LEFT JOIN with ON, WHERE (`= != < > <= >=`, AND/OR, parentheses), GROUP BY, HAVING, ORDER BY (ASC/DESC), LIMIT, aggregates (COUNT, SUM, AVG, MIN, MAX).
+### Direct NoSQL Compiler (`nosql/`)
+- **NoSQL Lexer:** Scans MongoDB shell queries and JSON objects, tracking lines and columns.
+- **NoSQL Parser:** Parses `db.<collection>.<method>(...)` and chained modifiers (`.sort()`, `.limit()`).
+- **NoSQL Semantic Checker:** Validates:
+  - Collection existence in catalog (with Levenshtein distance typo suggestions).
+  - MongoDB operator validity (`$gt`, `$match`, `$group`, etc. catching typos like `$gtt`).
+  - Document field existence in filters, projections, and aggregations.
+  - Value type compatibility.
+- **NoSQL Formatter:** Emits clean, 2-space indented MongoDB shell JavaScript syntax.
 
-**Out of scope (deliberately):** subqueries, UNION/INTERSECT/EXCEPT, window functions, INSERT/UPDATE/DELETE, DDL.
-
-Full grammar is in the project report.
-
-## AI integration
-
-Two independent, removable integration points:
-
-1. **NL → SQL** — translates a plain-English question into a candidate query, constrained by few-shot examples to the supported grammar. Output is treated as untrusted input to the lexer.
-2. **Error explainer** — takes the compiler's structured error (phase, code, message, line, column, context) and produces a short, jargon-free explanation plus a suggested fix. Never replaces the original error, never used to decide validity.
-
-Disabling both leaves a complete, independently working SQL compiler.
+---
 
 ## Status
 
-**Fully Implemented & Verified** — End-to-end hand-written compiler pipeline with zero external compiler dependencies, 33/33 automated tests passing, all 7 evaluation matrix scenarios verified, and decoupled AI edges with built-in offline fallbacks.
+**Fully Implemented & Verified** — 57/57 automated unit tests passing, all 10 evaluation matrix scenarios verified, complete offline fallback heuristics, and zero external compiler generator dependencies.
+
+---
 
 ## Repo Structure
 
@@ -95,64 +96,82 @@ CD/
 │   └── errors.py              # LexicalError & DiagnosticRecord
 ├── parser/
 │   ├── ast_nodes.py           # Strongly-typed AST dataclasses (ASCII tree renderer)
-│   ├── parser.py              # Recursive-descent LL(1) predictive parser
+│   ├── parser.py              # Recursive-descent predictive parser
 │   └── errors.py              # ParserSyntaxError
 ├── semantic/
-│   ├── catalog.py             # Relational Database Catalog & schema definitions
-│   ├── symbol_table.py        # Table scope, alias tracking, column ambiguity resolution
+│   ├── catalog.py             # Database Catalog & schema definitions
+│   ├── symbol_table.py        # Table scope, alias tracking, column resolution
 │   ├── checker.py             # 5 semantic verification checks + auto-correction
 │   ├── fuzzy.py               # Levenshtein distance & fuzzy catalog matching
 │   └── errors.py              # SemanticError
 ├── formatter/
 │   └── pretty_printer.py      # Canonical AST pretty-printer & unparser
+├── codegen/
+│   ├── __init__.py            # Target code generation package
+│   └── nosql_transpiler.py    # SQL AST -> MongoDB MQL & PyMongo Transpiler
+├── nosql/
+│   ├── __init__.py            # NoSQL compiler package
+│   ├── tokens.py              # NoSQL Token types
+│   ├── lexer.py               # Character scanner for MongoDB MQL
+│   ├── ast_nodes.py           # NoSQL AST definitions
+│   ├── parser.py              # Recursive-descent MQL parser
+│   ├── checker.py             # Collection, operator, and field semantic validator
+│   ├── formatter.py           # Canonical MQL shell pretty-printer
+│   └── errors.py              # NoSQL structured errors & diagnostics
 ├── ai/
 │   ├── llm_client.py          # Unified client (Gemini / OpenAI / Mock offline provider)
 │   ├── nl_to_sql.py           # Natural Language -> candidate SQL translator
 │   └── error_explainer.py     # DiagnosticRecord -> plain-English mentor
 └── tests/
-    ├── test_lexer.py          # Tokenization, trivia, line/col tracking tests
-    ├── test_parser.py         # Recursive descent, AST construction, precedence tests
-    ├── test_semantic.py       # Catalog binding, FK checks, type checks, GROUP BY tests
-    ├── test_formatter.py      # Canonical formatting & indentation tests
-    └── test_matrix.py         # 7 canonical report evaluation scenarios
+    ├── test_lexer.py          # SQL Lexer tests
+    ├── test_parser.py         # SQL Parser tests
+    ├── test_semantic.py       # Semantic checker tests
+    ├── test_formatter.py      # SQL Formatter tests
+    ├── test_codegen_nosql.py  # SQL -> MongoDB Transpiler tests (9 tests)
+    ├── test_nosql_validator.py# Direct NoSQL validator tests (12 tests)
+    └── test_matrix.py         # 10 canonical evaluation scenarios
 ```
+
+---
 
 ## Quickstart & Usage
 
-### 1. Run the Full Pipeline Demo
+### 1. Run the Full Pipeline Demo (SQL + NoSQL)
 ```bash
 python main.py --demo
 ```
 
-### 2. Run the 7 Evaluation Scenarios (Report Section 11)
+### 2. Run the 10 Evaluation Matrix Scenarios
 ```bash
 python main.py --matrix
 ```
 
-### 3. Run All Automated Unit Tests
+### 3. Run All 57 Automated Unit Tests
 ```bash
 python -m unittest discover tests
 ```
 
-### 4. Interactive REPL Mode
+### 4. Interactive REPL Mode (Auto-Detects SQL vs NoSQL)
 ```bash
 python main.py
 ```
-*Tip: Inside the REPL, type SQL queries, prefix with `nl:` for natural language queries, type `matrix`, `demo`, or `catalog`.*
+*In the REPL:*
+- Type any SQL query to validate, format, and synthesize MongoDB MQL.
+- Type any NoSQL query starting with `db.` (e.g. `db.customers.find({ "city": "Delhi" });`) to validate and format MQL.
+- Prefix with `nl:` for natural language queries.
+- Type `matrix`, `demo`, or `catalog`.
 
-### 5. Validate a Direct SQL Query
+### 5. Validate SQL & Synthesize MongoDB MQL
 ```bash
-python main.py --query "SELECT c.name, o.status FROM customers c JOIN orders o ON c.id = o.customer_id"
+python main.py --query "SELECT name, city FROM customers WHERE city = 'Delhi' ORDER BY name ASC LIMIT 10"
 ```
 
-### 6. Natural Language Translation & Validation
+### 6. Validate a Direct NoSQL Query
+```bash
+python main.py --nosql "db.customers.find({ \"city\": \"Delhi\" }, { \"name\": 1 }).limit(5);"
+```
+
+### 7. Natural Language Translation & Validation
 ```bash
 python main.py --nl "Find all customers from Delhi"
 ```
-
-### 7. AST-Based Fuzzy Auto-Correction
-```bash
-python main.py --auto-correct --query "SELECT c.name, o.status FROM customers c JOIN orders o ON c.id = o.cust_id"
-```
-*(Notice: automatically repairs `cust_id` -> `customer_id` via Levenshtein distance $\le 2$).*
-

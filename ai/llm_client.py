@@ -62,6 +62,31 @@ class MockLLMProvider:
                 "This column name exists in multiple tables participating in the query. "
                 "Prefix the column name with its table name or alias (e.g., 'c.id' instead of 'id')."
             )
+        elif err == "ERR_NOSQL_COLLECTION_NOT_FOUND":
+            cols_hint = f" Available collections: {', '.join(record.available_columns)}." if record.available_columns else ""
+            suggestion = f" Suggestion: Did you mean '{record.suggestion}'?" if record.suggestion else ""
+            return (
+                f"The NoSQL query references a collection that doesn't exist in the catalog.{cols_hint}{suggestion} "
+                f"Please verify the collection name against the declared catalog."
+            )
+        elif err == "ERR_NOSQL_FIELD_NOT_FOUND":
+            cols_hint = f" Available fields: {', '.join(record.available_columns)}." if record.available_columns else ""
+            suggestion = f" Suggestion: Did you mean '{record.suggestion}'?" if record.suggestion else ""
+            return (
+                f"The NoSQL document references a nonexistent field.{cols_hint}{suggestion} "
+                f"Ensure the filter or projection fields match the declared document schema."
+            )
+        elif err == "ERR_NOSQL_INVALID_OPERATOR":
+            suggestion = f" Suggestion: Did you mean '{record.suggestion}'?" if record.suggestion else ""
+            return (
+                f"The query uses an unrecognized MongoDB operator.{suggestion} "
+                f"Make sure to use standard MongoDB operators like $eq, $gt, $match, $group, etc."
+            )
+        elif err == "ERR_NOSQL_TYPE_MISMATCH":
+            return (
+                f"Type error in NoSQL filter: {record.message} "
+                f"Ensure that values in filter operators match the data types defined in the schema."
+            )
         return f"{record.message} Please check the syntax and schema constraints."
 
 

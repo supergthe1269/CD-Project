@@ -12,7 +12,7 @@ import sys
 import os
 import argparse
 import json
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 # Ensure UTF-8 stdout on all terminals (including Windows cp1252)
 if hasattr(sys.stdout, "reconfigure"):
@@ -53,12 +53,25 @@ class Colors:
     RESET = "\033[0m"
 
 
-def print_banner():
+from ai.llm_client import LLMClient
+
+
+def print_banner(pipeline: Optional["CompilerPipeline"] = None):
+    ai_badge = ""
+    if pipeline:
+        status = pipeline.get_ai_status()
+        if status.get("is_live"):
+            ai_badge = f"\n  AI Status: {Colors.GREEN}● LIVE ({status['provider']} - {status['model']}){Colors.RESET} [Key: {status['masked_key']}]"
+        elif pipeline.enable_ai:
+            ai_badge = f"\n  AI Status: {Colors.YELLOW}○ OFFLINE MOCK HEURISTIC (No API key configured){Colors.RESET}"
+        else:
+            ai_badge = f"\n  AI Status: {Colors.DIM}✕ DISABLED{Colors.RESET}"
+
     banner = f"""{Colors.CYAN}{Colors.BOLD}
 ========================================================================
   AI-Augmented SQL Query Validator & Formatter (BCSE307P Compiler Lab)
   Core Principle: "AI Proposes, The Compiler Decides"
-  Team: 24BCB0020 (Gaurav Nanhe) | 24BAI0351 (V Surya)
+  Team: 24BCB0020 (Gaurav Nanhe) | 24BAI0351 (V Surya){ai_badge}
 ========================================================================{Colors.RESET}"""
     print(banner)
 
@@ -66,15 +79,41 @@ def print_banner():
 class CompilerPipeline:
     """End-to-end multi-model compiler pipeline coordinating all SQL & NoSQL phases."""
 
-    def __init__(self, catalog: Optional[DatabaseCatalog] = None, auto_correct: bool = False, enable_ai: bool = True):
+    def __init__(
+        self,
+        catalog: Optional[DatabaseCatalog] = None,
+        auto_correct: bool = False,
+        enable_ai: bool = True,
+        api_key: Optional[str] = None,
+    ):
         self.catalog = catalog or create_default_catalog()
         self.auto_correct = auto_correct
         self.enable_ai = enable_ai
-        self.nl_translator = NLToSQLTranslator(catalog=self.catalog) if enable_ai else None
-        self.ai_explainer = AIErrorExplainer() if enable_ai else None
+        self.api_key = api_key
+        self.llm_client = LLMClient(api_key=api_key) if enable_ai else None
+        self.nl_translator = NLToSQLTranslator(client=self.llm_client, catalog=self.catalog) if enable_ai else None
+        self.ai_explainer = AIErrorExplainer(client=self.llm_client) if enable_ai else None
         self.formatter = SQLFormatter()
         self.nosql_transpiler = NoSQLTranspiler()
         self.nosql_formatter = NoSQLFormatter()
+
+    def set_api_key(self, api_key: str):
+        """Updates API key dynamically at runtime."""
+        self.api_key = api_key
+        if self.llm_client:
+            self.llm_client.set_api_key(api_key)
+
+    def get_ai_status(self) -> Dict[str, Any]:
+        """Returns provider, live status, and model name."""
+        if not self.enable_ai or not self.llm_client:
+            return {"is_live": False, "provider": "Disabled", "model": "none", "masked_key": None}
+        return self.llm_client.get_status()
+
+    def test_ai_connection(self) -> Tuple[bool, str]:
+        """Runs a live diagnostic ping to the configured LLM API."""
+        if not self.enable_ai or not self.llm_client:
+            return False, "AI edge is currently disabled."
+        return self.llm_client.test_connection()
 
     def process_query(self, query: str, verbose: bool = False, emit_nosql: bool = True) -> Tuple[bool, Optional[str], Optional[DiagnosticRecord]]:
         """
@@ -311,10 +350,10 @@ def run_validation_matrix():
     print(f"{Colors.BOLD}Matrix Summary: {passed_count}/{len(cases)} tests verified successfully.{Colors.RESET}\n")
 
 
-def run_demo():
+def run_demo(api_key: Optional[str] = None):
     """Runs a complete demonstration of the compiler pipeline (SQL + NoSQL)."""
-    print_banner()
-    pipeline = CompilerPipeline(auto_correct=True, enable_ai=True)
+    pipeline = CompilerPipeline(auto_correct=True, enable_ai=True, api_key=api_key)
+    print_banner(pipeline)
 
     print(f"\n{Colors.BOLD}{Colors.HEADER}=== DEMO 1: Valid Complex Analytical Query (SQL -> Formatted SQL + MQL) ==={Colors.RESET}")
     sample_valid = (
@@ -348,19 +387,20 @@ def run_demo():
     pipeline.process_nosql_query(nosql_invalid, verbose=True)
 
 
-def run_repl():
+def run_repl(api_key: Optional[str] = None):
     """Interactive command-line loop for testing SQL & NoSQL queries."""
-    print_banner()
+    pipeline = CompilerPipeline(auto_correct=True, enable_ai=True, api_key=api_key)
+    print_banner(pipeline)
     print("Commands:")
     print("  - Type any SQL query to validate, parse, format, and synthesize MongoDB MQL.")
     print("  - Type any NoSQL query (starts with 'db.' or '{') to validate and format MQL.")
     print("  - Prefix with 'nl:' to test Natural Language translation.")
+    print("  - Type 'key <API_KEY>' to set or update Gemini / OpenAI API key live.")
+    print("  - Type 'ai-status' to test and inspect the active AI provider.")
     print("  - Type 'matrix' to run the 10-case evaluation matrix.")
     print("  - Type 'demo' to run the full presentation.")
     print("  - Type 'catalog' to inspect the database schema.")
     print("  - Type 'exit' or 'quit' to close.\n")
-
-    pipeline = CompilerPipeline(auto_correct=True, enable_ai=True)
 
     while True:
         try:
@@ -374,7 +414,7 @@ def run_repl():
                 run_validation_matrix()
                 continue
             if user_input.lower() == "demo":
-                run_demo()
+                run_demo(api_key=pipeline.api_key)
                 continue
             if user_input.lower() == "catalog":
                 print(f"\n{Colors.BOLD}Active Database Catalog / Collections:{Colors.RESET}")
@@ -388,9 +428,38 @@ def run_repl():
                 print()
                 continue
 
+            if user_input.lower().startswith("key ") or user_input.lower().startswith("apikey "):
+                new_key = user_input.split(" ", 1)[1].strip()
+                pipeline.set_api_key(new_key)
+                st = pipeline.get_ai_status()
+                print(f"\nConfigured AI Key: {Colors.CYAN}{st['provider']}{Colors.RESET} [{st['masked_key']}]")
+                print("Testing live connectivity...")
+                ok, msg = pipeline.test_ai_connection()
+                if ok:
+                    print(f"{Colors.GREEN}[✓] {msg}{Colors.RESET}\n")
+                else:
+                    print(f"{Colors.YELLOW}[!] {msg}{Colors.RESET}\n")
+                continue
+
+            if user_input.lower() in ("ai-status", "status-ai", "test-ai"):
+                st = pipeline.get_ai_status()
+                print(f"\n{Colors.BOLD}AI Provider:{Colors.RESET} {st['provider']} ({st['model']})")
+                print(f"{Colors.BOLD}Live Active:{Colors.RESET} {st['is_live']}")
+                if st['masked_key']:
+                    print(f"{Colors.BOLD}Masked Key:{Colors.RESET} {st['masked_key']}")
+                print("Testing live connectivity...")
+                ok, msg = pipeline.test_ai_connection()
+                if ok:
+                    print(f"{Colors.GREEN}[✓] {msg}{Colors.RESET}\n")
+                else:
+                    print(f"{Colors.YELLOW}[!] {msg}{Colors.RESET}\n")
+                continue
+
             if user_input.lower().startswith("nl:"):
                 nl_query = user_input[3:].strip()
-                print(f"Proposing candidate SQL via AI for: '{nl_query}'...")
+                st = pipeline.get_ai_status()
+                provider_str = f" via {st['provider']}" if st['is_live'] else " (Offline Mock)"
+                print(f"Proposing candidate SQL{provider_str} for: '{nl_query}'...")
                 candidate = pipeline.nl_translator.translate(nl_query)
                 print(f"Candidate Query: {Colors.YELLOW}{candidate}{Colors.RESET}")
                 pipeline.process_query(candidate, verbose=True)
@@ -412,30 +481,58 @@ def main():
     parser.add_argument("--query", "--sql", nargs="+", type=str, help="Process a direct SQL query")
     parser.add_argument("--nosql", nargs="+", type=str, help="Process a direct NoSQL (MongoDB MQL) query")
     parser.add_argument("--nl", type=str, help="Translate and validate a Natural Language question")
+    parser.add_argument("--api-key", type=str, help="API Key for Google Gemini (AIza...) or OpenAI (sk-...)")
+    parser.add_argument("--test-ai", action="store_true", help="Test connectivity to live AI API and exit")
+    parser.add_argument("--ai-status", action="store_true", help="Print active AI provider configuration and exit")
     parser.add_argument("--auto-correct", action="store_true", help="Enable AST-based fuzzy auto-correction")
     parser.add_argument("--no-ai", action="store_true", help="Disable all external AI edge components")
 
     args = parser.parse_args()
 
+    if args.test_ai:
+        pipeline = CompilerPipeline(api_key=args.api_key, enable_ai=not args.no_ai)
+        st = pipeline.get_ai_status()
+        print(f"\n{Colors.BOLD}AI Provider:{Colors.RESET} {st['provider']} ({st['model']})")
+        if st['masked_key']:
+            print(f"{Colors.BOLD}Masked Key:{Colors.RESET} {st['masked_key']}")
+        print("Testing live connectivity...")
+        ok, msg = pipeline.test_ai_connection()
+        if ok:
+            print(f"{Colors.GREEN}[✓] {msg}{Colors.RESET}\n")
+        else:
+            print(f"{Colors.YELLOW}[!] {msg}{Colors.RESET}\n")
+        return
+
+    if args.ai_status:
+        pipeline = CompilerPipeline(api_key=args.api_key, enable_ai=not args.no_ai)
+        st = pipeline.get_ai_status()
+        print(f"\n{Colors.BOLD}AI Provider:{Colors.RESET} {st['provider']}")
+        print(f"{Colors.BOLD}Live Model:{Colors.RESET} {st['model']}")
+        print(f"{Colors.BOLD}Live Active:{Colors.RESET} {st['is_live']}")
+        if st['masked_key']:
+            print(f"{Colors.BOLD}Masked Key:{Colors.RESET} {st['masked_key']}")
+        print()
+        return
+
     if args.demo:
-        run_demo()
+        run_demo(api_key=args.api_key)
     elif args.matrix:
         run_validation_matrix()
     elif args.nosql:
         nosql_query = " ".join(args.nosql) if isinstance(args.nosql, list) else args.nosql
-        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai)
+        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai, api_key=args.api_key)
         pipeline.process_nosql_query(nosql_query, verbose=True)
     elif args.query:
         sql_query = " ".join(args.query) if isinstance(args.query, list) else args.query
-        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai)
+        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai, api_key=args.api_key)
         pipeline.process_query(sql_query, verbose=True)
     elif args.nl:
-        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai)
+        pipeline = CompilerPipeline(auto_correct=args.auto_correct, enable_ai=not args.no_ai, api_key=args.api_key)
         candidate = pipeline.nl_translator.translate(args.nl)
         print(f"Candidate SQL: {candidate}")
         pipeline.process_query(candidate, verbose=True)
     else:
-        run_repl()
+        run_repl(api_key=args.api_key)
 
 
 if __name__ == "__main__":

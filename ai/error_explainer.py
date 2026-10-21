@@ -25,8 +25,11 @@ Keep it direct, professional, and friendly.
 
 
 class AIErrorExplainer:
-    def __init__(self, client: Optional[LLMClient] = None):
-        self.client = client or LLMClient()
+    def __init__(self, client: Optional[LLMClient] = None, api_key: Optional[str] = None):
+        self.client = client or LLMClient(api_key=api_key)
+
+    def get_status(self):
+        return self.client.get_status()
 
     def explain(self, diagnostic: DiagnosticRecord) -> str:
         record_json = json.dumps(diagnostic.to_dict(), indent=2)

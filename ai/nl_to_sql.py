@@ -25,9 +25,17 @@ Output ONLY the raw SQL query with no markdown formatting, no backticks, and no 
 
 
 class NLToSQLTranslator:
-    def __init__(self, client: Optional[LLMClient] = None, catalog: Optional[DatabaseCatalog] = None):
-        self.client = client or LLMClient()
+    def __init__(
+        self,
+        client: Optional[LLMClient] = None,
+        catalog: Optional[DatabaseCatalog] = None,
+        api_key: Optional[str] = None,
+    ):
+        self.client = client or LLMClient(api_key=api_key)
         self.catalog = catalog or create_default_catalog()
+
+    def get_status(self):
+        return self.client.get_status()
 
     def translate(self, natural_language_query: str) -> str:
         """Translates a natural language query into a candidate SQL query."""

@@ -77,7 +77,7 @@ Target Code Generator (NoSQL Transpiler)     Canonical MQL Shell Output
 
 ## Status
 
-**Fully Implemented & Verified** — 57/57 automated unit tests passing, all 10 evaluation matrix scenarios verified, complete offline fallback heuristics, and zero external compiler generator dependencies.
+**Fully Implemented & Verified** — 64/64 automated unit tests passing, all 10 evaluation matrix scenarios verified, complete zero-dependency REST drivers for Google Gemini / OpenAI with automatic offline fallback heuristics, and zero external compiler generator dependencies.
 
 ---
 
@@ -87,6 +87,7 @@ Target Code Generator (NoSQL Transpiler)     Canonical MQL Shell Output
 CD/
 ├── main.py                    # Unified entry point & interactive REPL / CLI
 ├── requirements.txt           # Optional dependencies (google-genai, pytest)
+├── .env.example               # Environment variables template for API keys
 ├── grammar/
 │   ├── sql_grammar.ebnf       # Formal EBNF grammar specification
 │   └── README.md              # Precedence rules & grammar design rationale
@@ -119,7 +120,7 @@ CD/
 │   ├── formatter.py           # Canonical MQL shell pretty-printer
 │   └── errors.py              # NoSQL structured errors & diagnostics
 ├── ai/
-│   ├── llm_client.py          # Unified client (Gemini / OpenAI / Mock offline provider)
+│   ├── llm_client.py          # Unified client with native REST drivers (Gemini / OpenAI / Mock)
 │   ├── nl_to_sql.py           # Natural Language -> candidate SQL translator
 │   └── error_explainer.py     # DiagnosticRecord -> plain-English mentor
 └── tests/
@@ -129,49 +130,92 @@ CD/
     ├── test_formatter.py      # SQL Formatter tests
     ├── test_codegen_nosql.py  # SQL -> MongoDB Transpiler tests (9 tests)
     ├── test_nosql_validator.py# Direct NoSQL validator tests (12 tests)
+    ├── test_ai_client.py      # AI client & REST fallback tests (7 tests)
     └── test_matrix.py         # 10 canonical evaluation scenarios
+```
+
+---
+
+## AI Integration & API Key Setup
+
+The compiler works **100% offline out-of-the-box** using deterministic heuristic models. If you have a Google Gemini or OpenAI API key, you can activate live generation with **zero external dependencies** (uses Python's native `urllib`):
+
+### Option A: `.env` File (Recommended)
+Copy the template and paste your key:
+```bash
+copy .env.example .env
+```
+Inside `.env`:
+```env
+GEMINI_API_KEY=AIzaSyYourGeminiApiKeyHere
+```
+
+### Option B: CLI Argument
+Pass the key directly on any command:
+```bash
+python main.py --api-key "AIzaSy..." --nl "Find all customers in Delhi"
+```
+
+### Option C: Inside the Interactive REPL
+Type `key <API_KEY>` inside the interactive prompt to test and switch keys on the fly:
+```
+query-compiler > key AIzaSy...
+Configured AI Key: Google Gemini [AIza...34X]
+Testing live connectivity...
+[✓] Google Gemini API connected successfully
 ```
 
 ---
 
 ## Quickstart & Usage
 
-### 1. Run the Full Pipeline Demo (SQL + NoSQL)
+### 1. Test AI Connectivity & Status
 ```bash
-python main.py --demo
+# Check active AI configuration
+python main.py --ai-status
+
+# Test connectivity to live model
+python main.py --test-ai
 ```
 
-### 2. Run the 10 Evaluation Matrix Scenarios
-```bash
-python main.py --matrix
-```
-
-### 3. Run All 57 Automated Unit Tests
+### 2. Run All 64 Automated Unit Tests
 ```bash
 python -m unittest discover tests
 ```
 
-### 4. Interactive REPL Mode (Auto-Detects SQL vs NoSQL)
+### 3. Run the 10 Evaluation Matrix Scenarios
+```bash
+python main.py --matrix
+```
+
+### 4. Run the Full Pipeline Demo (SQL + NoSQL)
+```bash
+python main.py --demo
+```
+
+### 5. Interactive REPL Mode (Auto-Detects SQL vs NoSQL)
 ```bash
 python main.py
 ```
 *In the REPL:*
 - Type any SQL query to validate, format, and synthesize MongoDB MQL.
-- Type any NoSQL query starting with `db.` (e.g. `db.customers.find({ "city": "Delhi" });`) to validate and format MQL.
+- Type any NoSQL query starting with `db.` to validate and format MQL.
 - Prefix with `nl:` for natural language queries.
+- Type `key <API_KEY>` to set or change your AI key live.
+- Type `ai-status` to inspect connectivity.
 - Type `matrix`, `demo`, or `catalog`.
 
-### 5. Validate SQL & Synthesize MongoDB MQL
+### 6. Validate SQL & Synthesize MongoDB MQL
 ```bash
 python main.py --query "SELECT name, city FROM customers WHERE city = 'Delhi' ORDER BY name ASC LIMIT 10"
 ```
 
-### 6. Validate a Direct NoSQL Query
+### 7. Validate a Direct NoSQL Query
 ```bash
 python main.py --nosql "db.customers.find({ \"city\": \"Delhi\" }, { \"name\": 1 }).limit(5);"
 ```
 
-### 7. Natural Language Translation & Validation
+### 8. Natural Language Translation & Validation
 ```bash
 python main.py --nl "Find all customers from Delhi"
 ```

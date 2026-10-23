@@ -29,7 +29,7 @@ class TestAIClient(unittest.TestCase):
         status = client.get_status()
         self.assertTrue(status["is_live"])
         self.assertEqual(status["provider"], "Google Gemini")
-        self.assertEqual(status["model"], "gemini-2.5-flash")
+        self.assertEqual(status["model"], "gemini-2.0-flash")
         self.assertEqual(status["masked_key"], "AIza...6789")
 
     def test_openai_key_detection(self):

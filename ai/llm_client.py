@@ -6,7 +6,7 @@ Authors:
   - V Surya (24BAI0351)
 
 Supports:
-  1. Google Gemini REST API (gemini-2.5-flash / gemini-1.5-flash) via native urllib (zero dependencies)
+  1. Google Gemini REST API (gemini-2.0-flash / dynamic discovery) via native urllib (zero dependencies)
   2. OpenAI REST API (gpt-4o-mini) via native urllib
   3. Optional google-genai SDK if installed
   4. Automatic .env file loading
@@ -18,7 +18,7 @@ import json
 import time
 import urllib.request
 import urllib.error
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from lexer.errors import DiagnosticRecord
 
 
@@ -144,6 +144,8 @@ class LLMClient:
         self.mock = MockLLMProvider()
         self.last_provider_used: str = "mock"
         self.last_error: Optional[str] = None
+        self.active_gemini_model: str = "gemini-2.0-flash"
+        self._cached_gemini_models: Optional[List[Tuple[str, str]]] = None
 
         # Key resolution
         if api_key:
@@ -158,8 +160,10 @@ class LLMClient:
         if key.startswith("sk-"):
             self.openai_key = key
         else:
-            # Google AI Studio keys typically begin with AIzaSy...
+            # Google AI Studio keys typically begin with AIzaSy... or AQ...
             self.gemini_key = key
+            self._cached_gemini_models = None
+            self.active_gemini_model = "gemini-2.0-flash"
 
     def get_status(self) -> Dict[str, Any]:
         """Returns structured status of the active LLM provider."""
@@ -167,7 +171,7 @@ class LLMClient:
             return {
                 "provider": "Google Gemini",
                 "is_live": True,
-                "model": "gemini-2.5-flash",
+                "model": self.active_gemini_model,
                 "masked_key": self._mask_key(self.gemini_key),
             }
         elif self.openai_key:
@@ -221,7 +225,7 @@ class LLMClient:
                 resp = self._call_gemini_rest(test_prompt, system_instruction="Be concise.")
                 elapsed = time.time() - start_time
                 if resp:
-                    return True, f"Google Gemini API connected successfully ({resp[:30]!r}, latency: {elapsed:.2f}s)"
+                    return True, f"Google Gemini API connected successfully via {self.active_gemini_model} ({resp[:30]!r}, latency: {elapsed:.2f}s)"
                 else:
                     return False, f"Google Gemini API failed: {self.last_error or 'Empty response'}"
 
@@ -246,9 +250,87 @@ class LLMClient:
         # Priority: Native urllib REST call (works anywhere without pip install)
         return self._call_gemini_rest(prompt, system_instruction)
 
+    def _get_candidate_gemini_models(self) -> List[Tuple[str, str]]:
+        """Returns a list of (api_version, model_name) pairs to query.
+        Queries ModelService.ListModels for real-time account-enabled models,
+        filtering out non-text modalities (TTS, image, transcribe, etc.)
+        and falling back to stable defaults across v1beta and v1.
+        """
+        if self._cached_gemini_models:
+            return self._cached_gemini_models
+
+        discovered: List[Tuple[str, str]] = []
+        non_text_patterns = (
+            "tts", "image", "clip", "audio", "video", "transcribe",
+            "robotics", "computer-use", "banana", "preview-tts"
+        )
+
+        if self.gemini_key:
+            for api_ver in ("v1beta", "v1"):
+                url = f"https://generativelanguage.googleapis.com/{api_ver}/models?key={self.gemini_key}"
+                req = urllib.request.Request(
+                    url,
+                    headers={"Content-Type": "application/json"},
+                    method="GET"
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        res_json = json.loads(response.read().decode("utf-8"))
+                        for m in res_json.get("models", []):
+                            methods = m.get("supportedGenerationMethods", [])
+                            if "generateContent" in methods:
+                                name = m.get("name", "").replace("models/", "")
+                                name_lower = name.lower()
+                                if any(pat in name_lower for pat in non_text_patterns):
+                                    continue
+                                if name and (api_ver, name) not in discovered:
+                                    discovered.append((api_ver, name))
+                    if discovered:
+                        break
+                except Exception:
+                    pass
+
+        if discovered:
+            def model_priority(item: Tuple[str, str]) -> int:
+                m_name = item[1].lower()
+                # Fast, verified working flash models first
+                if m_name in ("gemini-flash-lite-latest", "gemini-3.5-flash", "gemini-3.5-flash-lite"):
+                    return 0
+                if "flash-lite" in m_name:
+                    return 1
+                if "3.5-flash" in m_name or "3-flash" in m_name:
+                    return 2
+                if "flash-latest" in m_name or "2.0-flash" in m_name:
+                    return 3
+                if "flash" in m_name:
+                    return 4
+                if "gemma" in m_name:
+                    return 5
+                if "pro" in m_name:
+                    return 6
+                return 7
+
+            discovered.sort(key=model_priority)
+            self._cached_gemini_models = discovered
+            self.active_gemini_model = discovered[0][1]
+            return discovered
+
+        # Fallback candidates if discovery is offline or blocked
+        fallback_candidates = [
+            ("v1beta", "gemini-flash-lite-latest"),
+            ("v1beta", "gemini-3.5-flash"),
+            ("v1beta", "gemini-2.0-flash"),
+            ("v1beta", "gemini-2.0-flash-lite"),
+            ("v1beta", "gemini-1.5-flash"),
+            ("v1beta", "gemini-1.5-flash-latest"),
+            ("v1", "gemini-flash-lite-latest"),
+            ("v1", "gemini-2.0-flash"),
+        ]
+        return fallback_candidates
+
     def _call_gemini_rest(self, prompt: str, system_instruction: str = "") -> Optional[str]:
         """Native REST request to Gemini models using Python urllib."""
-        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        candidates = self._get_candidate_gemini_models()
 
         payload_dict: Dict[str, Any] = {
             "contents": [
@@ -265,8 +347,8 @@ class LLMClient:
 
         data = json.dumps(payload_dict).encode("utf-8")
 
-        for model in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_key}"
+        for api_ver, model in candidates:
+            url = f"https://generativelanguage.googleapis.com/{api_ver}/models/{model}:generateContent?key={self.gemini_key}"
             req = urllib.request.Request(
                 url,
                 data=data,
@@ -276,16 +358,20 @@ class LLMClient:
             try:
                 with urllib.request.urlopen(req, timeout=12) as response:
                     res_json = json.loads(response.read().decode("utf-8"))
-                    candidates = res_json.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
+                    cand_list = res_json.get("candidates", [])
+                    if cand_list:
+                        parts = cand_list[0].get("content", {}).get("parts", [])
                         if parts:
+                            self.active_gemini_model = model
+                            self._cached_gemini_models = [(api_ver, model)] + [
+                                c for c in candidates if c != (api_ver, model)
+                            ]
                             return parts[0].get("text", "").strip()
             except urllib.error.HTTPError as he:
                 error_body = he.read().decode("utf-8", errors="ignore")
                 self.last_error = f"HTTP {he.code}: {he.reason} - {error_body}"
-                # If model not found (404), try next model in loop; otherwise break
-                if he.code != 404:
+                # Only halt completely if authentication itself is explicitly invalid
+                if he.code in (401, 403) and ("API_KEY_INVALID" in error_body or "PERMISSION_DENIED" in error_body):
                     break
             except Exception as e:
                 self.last_error = str(e)

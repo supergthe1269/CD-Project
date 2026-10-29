@@ -45,3 +45,12 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local Reports & Generated Artifacts
+*.docx
+build_full_report.py
+extracted_images/
+paper/
+eval/*.tex
+eval/*.json
+!eval/benchmark_queries.json

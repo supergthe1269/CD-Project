@@ -1,0 +1,346 @@
+{
+  "metadata": {
+    "suite_name": "Multi-Model Query Compiler Benchmark Suite",
+    "description": "Empirical evaluation suite for testing schema-linking, LLM hallucination interception, AST-level fuzzy auto-repair, and SQL-to-NoSQL transcompilation.",
+    "version": "1.0",
+    "total_queries": 45
+  },
+  "test_categories": {
+    "valid_analytical_sql": [
+      {
+        "id": "VAL_01",
+        "description": "Wildcard projection over single base table",
+        "sql": "SELECT * FROM customers;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "find"
+      },
+      {
+        "id": "VAL_02",
+        "description": "Explicit projection with equality filter",
+        "sql": "SELECT name, city FROM customers WHERE city = 'Delhi';",
+        "expected_phase": "SUCCESS",
+        "target_mql": "find"
+      },
+      {
+        "id": "VAL_03",
+        "description": "Compound boolean filter with date comparison and precedence",
+        "sql": "SELECT id, name FROM customers WHERE (city = 'Delhi' OR city = 'Mumbai') AND signup_date > '2024-01-01';",
+        "expected_phase": "SUCCESS",
+        "target_mql": "find"
+      },
+      {
+        "id": "VAL_04",
+        "description": "Two-table INNER JOIN on validated foreign key",
+        "sql": "SELECT c.name, o.order_date, o.status FROM customers c JOIN orders o ON c.id = o.customer_id WHERE o.status = 'DELIVERED';",
+        "expected_phase": "SUCCESS",
+        "target_mql": "aggregate"
+      },
+      {
+        "id": "VAL_05",
+        "description": "Two-table LEFT JOIN with table aliases",
+        "sql": "SELECT c.name, o.id FROM customers c LEFT JOIN orders o ON c.id = o.customer_id;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "aggregate"
+      },
+      {
+        "id": "VAL_06",
+        "description": "Aggregate calculation with COUNT wildcard",
+        "sql": "SELECT city, COUNT(*) FROM customers GROUP BY city;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "aggregate"
+      },
+      {
+        "id": "VAL_07",
+        "description": "Aggregation with HAVING post-filter and ordering",
+        "sql": "SELECT city, COUNT(*) FROM customers GROUP BY city HAVING COUNT(*) > 5 ORDER BY city ASC;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "aggregate"
+      },
+      {
+        "id": "VAL_08",
+        "description": "Multiple aggregation functions (SUM, AVG, MIN, MAX)",
+        "sql": "SELECT product_id, SUM(quantity), AVG(price), MIN(price), MAX(price) FROM order_items GROUP BY product_id;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "aggregate"
+      },
+      {
+        "id": "VAL_09",
+        "description": "Multi-table join across orders and order_items",
+        "sql": "SELECT o.id, o.order_date, oi.quantity, oi.price FROM orders o JOIN order_items oi ON o.id = oi.order_id WHERE oi.quantity >= 2;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "aggregate"
+      },
+      {
+        "id": "VAL_10",
+        "description": "Single-table projection with ORDER BY and LIMIT",
+        "sql": "SELECT name, price FROM products WHERE category = 'Electronics' ORDER BY price DESC LIMIT 10;",
+        "expected_phase": "SUCCESS",
+        "target_mql": "find"
+      }
+    ],
+    "schema_hallucinations": [
+      {
+        "id": "HAL_01",
+        "description": "Plausible column hallucination on customers (full_name)",
+        "sql": "SELECT full_name FROM customers WHERE city = 'Delhi';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "full_name"
+      },
+      {
+        "id": "HAL_02",
+        "description": "Plausible column hallucination on customers (email)",
+        "sql": "SELECT name, email FROM customers WHERE signup_date > '2024-01-01';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "email"
+      },
+      {
+        "id": "HAL_03",
+        "description": "Plausible column hallucination on orders (total_amount)",
+        "sql": "SELECT id, total_amount FROM orders WHERE status = 'COMPLETED';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "total_amount"
+      },
+      {
+        "id": "HAL_04",
+        "description": "Plausible table hallucination (users instead of customers)",
+        "sql": "SELECT id, name FROM users WHERE city = 'Delhi';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_TABLE_NOT_FOUND",
+        "hallucinated_symbol": "users"
+      },
+      {
+        "id": "HAL_05",
+        "description": "Plausible table hallucination (invoices instead of orders)",
+        "sql": "SELECT invoice_id, amount FROM invoices WHERE status = 'PAID';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_TABLE_NOT_FOUND",
+        "hallucinated_symbol": "invoices"
+      },
+      {
+        "id": "HAL_06",
+        "description": "Plausible column hallucination in WHERE clause (phone)",
+        "sql": "SELECT name FROM customers WHERE phone = '9876543210';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "phone"
+      },
+      {
+        "id": "HAL_07",
+        "description": "Plausible column hallucination in GROUP BY clause (country)",
+        "sql": "SELECT country, COUNT(*) FROM customers GROUP BY country;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "country"
+      },
+      {
+        "id": "HAL_08",
+        "description": "Hallucinated join relationship column (o.cust_number)",
+        "sql": "SELECT c.name, o.id FROM customers c JOIN orders o ON c.id = o.cust_number;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "cust_number"
+      },
+      {
+        "id": "HAL_09",
+        "description": "Phantom column on products table (discount_price)",
+        "sql": "SELECT name, discount_price FROM products WHERE category = 'Apparel';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "discount_price"
+      },
+      {
+        "id": "HAL_10",
+        "description": "Multiple hallucinated attributes (address, zip_code)",
+        "sql": "SELECT address, zip_code FROM customers WHERE city = 'Bangalore';",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_COLUMN_NOT_FOUND",
+        "hallucinated_symbol": "address"
+      }
+    ],
+    "semantic_and_type_violations": [
+      {
+        "id": "SEM_01",
+        "description": "Incompatible comparison: DATE column compared with INT literal",
+        "sql": "SELECT name FROM customers WHERE signup_date = 42;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_TYPE_MISMATCH"
+      },
+      {
+        "id": "SEM_02",
+        "description": "Incompatible comparison: VARCHAR column compared with numerical operator",
+        "sql": "SELECT id FROM orders WHERE status > 100;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_TYPE_MISMATCH"
+      },
+      {
+        "id": "SEM_03",
+        "description": "GROUP BY inconsistency: non-aggregated column missing in GROUP BY list",
+        "sql": "SELECT city, signup_date, COUNT(*) FROM customers GROUP BY city;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_GROUP_BY_INCONSISTENCY"
+      },
+      {
+        "id": "SEM_04",
+        "description": "Invalid join: joining tables with no foreign key relationship",
+        "sql": "SELECT c.name, p.name FROM customers c JOIN products p ON c.id = p.id;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_INVALID_JOIN_RELATIONSHIP"
+      },
+      {
+        "id": "SEM_05",
+        "description": "Column ambiguity in multi-table join without table qualifier",
+        "sql": "SELECT id, name FROM customers c JOIN orders o ON c.id = o.customer_id;",
+        "expected_phase": "SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_AMBIGUOUS_COLUMN"
+      }
+    ],
+    "fuzzy_typo_repair": [
+      {
+        "id": "FUZ_01",
+        "description": "Foreign key column typo: cust_id -> customer_id (distance 4 in alias context)",
+        "sql": "SELECT c.name, o.status FROM customers c JOIN orders o ON c.id = o.cust_id;",
+        "target_col": "customer_id",
+        "typo_col": "cust_id",
+        "repairable": true
+      },
+      {
+        "id": "FUZ_02",
+        "description": "Column typo with edit distance 1: nam -> name",
+        "sql": "SELECT nam, city FROM customers WHERE city = 'Delhi';",
+        "target_col": "name",
+        "typo_col": "nam",
+        "repairable": true
+      },
+      {
+        "id": "FUZ_03",
+        "description": "Column typo with edit distance 1: stauts -> status",
+        "sql": "SELECT id, stauts FROM orders WHERE customer_id = 101;",
+        "target_col": "status",
+        "typo_col": "stauts",
+        "repairable": true
+      },
+      {
+        "id": "FUZ_04",
+        "description": "Column typo with edit distance 1: qunatity -> quantity",
+        "sql": "SELECT product_id, qunatity FROM order_items WHERE price > 500;",
+        "target_col": "quantity",
+        "typo_col": "qunatity",
+        "repairable": true
+      },
+      {
+        "id": "FUZ_05",
+        "description": "Column typo with edit distance 1: catgory -> category",
+        "sql": "SELECT id, name FROM products WHERE catgory = 'Books';",
+        "target_col": "category",
+        "typo_col": "catgory",
+        "repairable": true
+      }
+    ],
+    "nosql_transpilation_coverage": [
+      {
+        "id": "TRP_01",
+        "description": "Transpile SQL equality filter to MongoDB find() with $eq",
+        "sql": "SELECT name, city FROM customers WHERE city = 'Delhi';",
+        "expected_mql_op": "db.customers.find"
+      },
+      {
+        "id": "TRP_02",
+        "description": "Transpile SQL relational bounds to MongoDB find() with $gt and $lt",
+        "sql": "SELECT name, price FROM products WHERE price > 100 AND price <= 1000;",
+        "expected_mql_op": "db.products.find"
+      },
+      {
+        "id": "TRP_03",
+        "description": "Transpile SQL ORDER BY and LIMIT to chained .sort() and .limit()",
+        "sql": "SELECT name, city FROM customers ORDER BY name ASC LIMIT 10;",
+        "expected_mql_op": "db.customers.find"
+      },
+      {
+        "id": "TRP_04",
+        "description": "Transpile SQL GROUP BY to MongoDB $group aggregation stage",
+        "sql": "SELECT city, COUNT(*) FROM customers GROUP BY city;",
+        "expected_mql_op": "db.customers.aggregate"
+      },
+      {
+        "id": "TRP_05",
+        "description": "Transpile SQL JOIN to MongoDB $lookup and $unwind pipeline stages",
+        "sql": "SELECT c.name, o.status FROM customers c JOIN orders o ON c.id = o.customer_id;",
+        "expected_mql_op": "db.customers.aggregate"
+      },
+      {
+        "id": "TRP_06",
+        "description": "Transpile SQL HAVING clause to post-$group $match stage",
+        "sql": "SELECT city, COUNT(*) FROM customers GROUP BY city HAVING COUNT(*) > 5;",
+        "expected_mql_op": "db.customers.aggregate"
+      },
+      {
+        "id": "TRP_07",
+        "description": "End-to-end full SQL transpilation: JOIN + WHERE + GROUP BY + HAVING + ORDER BY + LIMIT",
+        "sql": "SELECT c.name, COUNT(*) FROM customers c JOIN orders o ON c.id = o.customer_id WHERE c.city = 'Delhi' GROUP BY c.name HAVING COUNT(*) > 2 ORDER BY c.name ASC LIMIT 10;",
+        "expected_mql_op": "db.customers.aggregate"
+      }
+    ],
+    "direct_nosql_validation": [
+      {
+        "id": "NSQ_01",
+        "description": "Valid MongoDB find query with filter and projection",
+        "query": "db.customers.find({ \"city\": \"Delhi\" }, { \"name\": 1, \"city\": 1 }).sort({ \"name\": 1 }).limit(10);",
+        "expected_phase": "SUCCESS"
+      },
+      {
+        "id": "NSQ_02",
+        "description": "NoSQL operator typo: $gtt instead of $gt",
+        "query": "db.customers.find({ \"signup_date\": { \"$gtt\": \"2024-01-01\" } });",
+        "expected_phase": "NOSQL_SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_NOSQL_INVALID_OPERATOR",
+        "suggested_operator": "$gt"
+      },
+      {
+        "id": "NSQ_03",
+        "description": "NoSQL collection typo: cusotmers instead of customers",
+        "query": "db.cusotmers.find({ \"city\": \"Delhi\" });",
+        "expected_phase": "NOSQL_SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_NOSQL_COLLECTION_NOT_FOUND",
+        "suggested_collection": "customers"
+      },
+      {
+        "id": "NSQ_04",
+        "description": "NoSQL field not present in declared schema: non_existent_prop",
+        "query": "db.customers.find({ \"non_existent_prop\": \"value\" });",
+        "expected_phase": "NOSQL_SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_NOSQL_FIELD_NOT_FOUND"
+      },
+      {
+        "id": "NSQ_05",
+        "description": "NoSQL type mismatch in operator comparison",
+        "query": "db.customers.find({ \"id\": { \"$gt\": \"not_an_integer\" } });",
+        "expected_phase": "NOSQL_SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_NOSQL_TYPE_MISMATCH"
+      },
+      {
+        "id": "NSQ_06",
+        "description": "Valid MongoDB aggregate pipeline with $match and $project",
+        "query": "db.customers.aggregate([{ \"$match\": { \"city\": \"Delhi\" } }, { \"$project\": { \"name\": 1, \"_id\": 0 } }]);",
+        "expected_phase": "SUCCESS"
+      },
+      {
+        "id": "NSQ_07",
+        "description": "NoSQL aggregation stage typo: $macth instead of $match",
+        "query": "db.customers.aggregate([{ \"$macth\": { \"city\": \"Delhi\" } }]);",
+        "expected_phase": "NOSQL_SEMANTIC_ANALYSIS",
+        "expected_error": "ERR_NOSQL_INVALID_OPERATOR",
+        "suggested_operator": "$match"
+      },
+      {
+        "id": "NSQ_08",
+        "description": "Direct NoSQL parser syntax error (unclosed brace)",
+        "query": "db.customers.find({ \"city\": \"Delhi\" ;",
+        "expected_phase": "NOSQL_SYNTAX_ANALYSIS"
+      }
+    ]
+  }
+}
+

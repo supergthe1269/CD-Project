@@ -1,0 +1,5 @@
+# Optional dependencies for live AI model API calls and enhanced CLI formatting
+# Note: The core compiler (lexer, parser, semantic checker, formatter) has ZERO external dependencies.
+
+google-genai>=0.1.0
+pytest>=8.0.0
